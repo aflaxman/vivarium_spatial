@@ -23,7 +23,7 @@ class ParticleVisualizer(Component):
                  triangle_size: int = 6,
                  trail_size: int = 5,
                  trail_length: int = 5,
-                 collision_color: tuple = (255, 255, 255),  # White collision circles
+                 collision_color: tuple = (200, 0, 0),
                  max_collision_radius: int = 300,  # Maximum radius of collision circles
                  collision_fade_speed: float = 0.05):  # How quickly collision circles fade
         super().__init__()

@@ -104,6 +104,8 @@ class Whimsy(Component):
         pop = self.population_view.get(index)
         # Scale the base angle change by whimsy value
         return angle * pop.whimsy
+
+
 class Collisions(Component):
     """Component for handling particle collisions using KDTree for efficient neighbor finding"""
     
@@ -124,6 +126,7 @@ class Collisions(Component):
         self.critical_radius = 0.01  # Distance threshold for collision detection
         self.randomness = builder.randomness.get_stream('particle.collisions')
         self.clock = builder.time.clock()
+        self.collisions = 0
         
     def on_initialize_simulants(self, pop_data: SimulantData) -> None:
         self.population_view.update(pd.DataFrame({
@@ -151,6 +154,8 @@ class Collisions(Component):
             self.current_collisions = []  # Clear current collisions
             return
 
+        self.collisions += len(collided_particles)
+
         # Store collision locations for visualization
         self.current_collisions = [(pop.iloc[i]['x'], pop.iloc[i]['y']) 
                                  for i in collided_particles]
@@ -169,3 +174,6 @@ class Collisions(Component):
         })
         
         self.population_view.update(updates)
+
+    def on_simulation_end(self, event: Event) -> None:
+        print(f'collisions total: {self.collisions}')

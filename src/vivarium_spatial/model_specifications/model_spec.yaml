@@ -4,6 +4,7 @@ components:
         - particle.Whimsy()
         - particle.Collisions()
         - visualizer.ParticleVisualizer()
+        - observers.CollisionObserver()
 
 configuration:
   randomness:
@@ -17,6 +18,6 @@ configuration:
       year: 2000
       month: 10
       day: 1
-    step_size: .1
+    step_size: 10
   population:
     population_size: 30
