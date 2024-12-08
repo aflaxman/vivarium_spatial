@@ -13,7 +13,8 @@ class Basic(Component):
     
     def setup(self, builder):
         self.near_radius = 1
-        self.max_step_size = 0.1
+        self.max_step_size = 0.01
+        self.max_angle_change = 10
 
         self.randomness = builder.randomness.get_stream('particle.basic')
                 
@@ -50,11 +51,12 @@ class Basic(Component):
         # Calculate position updates using trigonometry
         dx = steps * np.cos(theta_rad)
         dy = steps * np.sin(theta_rad)
+        dtheta = (self.randomness.get_draw(pop.index, additional_key='angle')-.5) * 2*self.max_angle_change
         
         # Update positions
         pop['x'] = (pop['x'] + dx) % 1.0  # Wrap around unit square using modulo
         pop['y'] = (pop['y'] + dy) % 1.0
-        
+        pop['theta'] = (pop['theta'] + dtheta) % 360.0
         # # Get current positions for neighbor calculation
         # positions = pop[['x', 'y']].values
         
