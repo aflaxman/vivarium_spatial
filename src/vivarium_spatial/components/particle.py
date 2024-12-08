@@ -177,3 +177,101 @@ class Collisions(Component):
 
     def on_simulation_end(self, event: Event) -> None:
         print(f'collisions total: {self.collisions}')
+
+class Flock(Component):
+    """Component for implementing flocking behavior where particles align their direction
+    with nearby neighbors using KDTree for efficient neighbor finding"""
+    
+    @property
+    def columns_created(self) -> List[str]:
+        return ['flock_count', 'last_flock_time']
+        
+    @property 
+    def columns_required(self) -> List[str]:
+        return ['x', 'y', 'theta']
+
+    def __init__(self):
+        super().__init__()
+        self.current_flocks = []  # List to store current flock centers
+        
+    def setup(self, builder: Builder) -> None:
+        """Setup flocking parameters and randomness stream"""
+        self.flock_radius = 0.05  # Distance threshold for neighbor detection
+        self.alignment_strength = 0.91  # How strongly to align with neighbors (0-1)
+        self.randomness = builder.randomness.get_stream('particle.flocking')
+        self.clock = builder.time.clock()
+        self.flock_updates = 0
+        
+    def on_initialize_simulants(self, pop_data: SimulantData) -> None:
+        self.population_view.update(pd.DataFrame({
+            'flock_count': 0,
+            'last_flock_time': pd.NaT
+        }, index=pop_data.index))
+        
+    def on_time_step(self, event: Event) -> None:
+        """Update particle directions based on neighboring particles"""
+        pop = self.population_view.get(event.index)
+        if len(pop) < 2:  # Need at least 2 particles for flocking
+            return
+            
+        # Build KDTree from current particle positions
+        positions = pop[['x', 'y']].values
+        tree = KDTree(positions, leaf_size=2)
+        
+        # Find all neighbors within flock radius for each particle
+        neighbor_indices = tree.query_radius(positions, r=self.flock_radius)
+        
+        # Track particles that will be updated
+        particles_to_update = []
+        new_thetas = []
+        flock_centers = []
+        
+        # Calculate new directions based on neighbors
+        for i, neighbors in enumerate(neighbor_indices):
+            if len(neighbors) > 1:  # Only update if particle has neighbors
+                # Calculate average direction of neighbors (excluding self)
+                neighbors = [n for n in neighbors if n != i]
+                neighbor_thetas = pop.iloc[neighbors]['theta'].values
+                
+                # Convert angles to vectors for proper averaging
+                neighbor_vectors = np.array([
+                    np.cos(np.radians(neighbor_thetas)),
+                    np.sin(np.radians(neighbor_thetas))
+                ])
+                avg_vector = np.mean(neighbor_vectors, axis=1)
+                avg_theta = np.degrees(np.arctan2(avg_vector[1], avg_vector[0]))
+                
+                # Interpolate between current direction and neighbor average
+                current_theta = pop.iloc[i]['theta']
+                new_theta = (
+                    (1 - self.alignment_strength) * current_theta + 
+                    self.alignment_strength * avg_theta
+                )
+                
+                particles_to_update.append(i)
+                new_thetas.append(new_theta)
+                
+                # Store flock center for visualization
+                flock_centers.append((
+                    np.mean(pop.iloc[neighbors]['x']),
+                    np.mean(pop.iloc[neighbors]['y'])
+                ))
+        
+        if not particles_to_update:
+            self.current_flocks = []  # Clear current flocks
+            return
+            
+        self.flock_updates += len(particles_to_update)
+        self.current_flocks = flock_centers
+        
+        # Update flocking stats
+        updates = pd.DataFrame({
+            'theta': new_thetas,
+            'flock_count': pop.iloc[particles_to_update]['flock_count'] + 1,
+            'last_flock_time': pd.Series(self.clock(), index=pop.index[particles_to_update])
+        }, index=pop.index[particles_to_update])
+        
+        self.population_view.update(updates)
+
+    def on_simulation_end(self, event: Event) -> None:
+        print(f'flock updates total: {self.flock_updates}')

@@ -3,6 +3,7 @@ components:
         - particle.Basic()
         - particle.Whimsy()
         - particle.Collisions()
+        - particle.Flock()
         - visualizer.ParticleVisualizer()
         - observers.CollisionObserver()
 
