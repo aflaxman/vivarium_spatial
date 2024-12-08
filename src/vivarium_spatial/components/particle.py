@@ -104,13 +104,12 @@ class Whimsy(Component):
         pop = self.population_view.get(index)
         # Scale the base angle change by whimsy value
         return angle * pop.whimsy
-
 class Collisions(Component):
     """Component for handling particle collisions using KDTree for efficient neighbor finding"""
     
     @property
     def columns_created(self) -> List[str]:
-        return []
+        return ['collision_count', 'last_collision_time']
         
     @property 
     def columns_required(self) -> List[str]:
@@ -118,11 +117,19 @@ class Collisions(Component):
 
     def __init__(self):
         super().__init__()
+        self.current_collisions = []  # List to store current collision locations
         
     def setup(self, builder: Builder) -> None:
         """Setup collision parameters and randomness stream"""
         self.critical_radius = 0.01  # Distance threshold for collision detection
         self.randomness = builder.randomness.get_stream('particle.collisions')
+        self.clock = builder.time.clock()
+        
+    def on_initialize_simulants(self, pop_data: SimulantData) -> None:
+        self.population_view.update(pd.DataFrame({
+            'collision_count': 0,
+            'last_collision_time': pd.NaT
+        }, index=pop_data.index))
         
     def on_time_step(self, event: Event) -> None:
         """Check for collisions and update particle directions"""
@@ -135,20 +142,30 @@ class Collisions(Component):
         tree = KDTree(positions, leaf_size=2)
         
         # Find all pairs of particles within critical radius
-        # Returns a list of (i,j) indices for particles within radius
         collision_pairs = tree.query_radius(positions, r=self.critical_radius, count_only=True)
         
         # Get particles with neighbors (arrays with length > 1)
-        collided_particles, = np.where(collision_pairs  > 1)
+        collided_particles, = np.where(collision_pairs > 1)
         
         if len(collided_particles) == 0:
+            self.current_collisions = []  # Clear current collisions
             return
+
+        # Store collision locations for visualization
+        self.current_collisions = [(pop.iloc[i]['x'], pop.iloc[i]['y']) 
+                                 for i in collided_particles]
 
         # Generate new random angles for all collided particles
         new_angles = self.randomness.get_draw(
             pd.Index(collided_particles),
             additional_key='collision_theta'
         ) * 360.0            
-        new_angles.name = 'theta'
-
-        self.population_view.update(new_angles)
+        
+        # Update collision stats
+        updates = pd.DataFrame({
+            'theta': new_angles,
+            'collision_count': pop.loc[new_angles.index, 'collision_count'] + 1,
+            'last_collision_time': pd.Series(self.clock(), index=new_angles.index)
+        })
+        
+        self.population_view.update(updates)

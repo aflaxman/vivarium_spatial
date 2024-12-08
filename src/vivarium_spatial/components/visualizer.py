@@ -12,7 +12,7 @@ class ParticleVisualizer(Component):
     
     @property
     def columns_required(self) -> Optional[List[str]]:
-        return ['x', 'y', 'theta', 'whimsy']
+        return ['x', 'y', 'theta', 'whimsy', 'collision_count', 'last_collision_time']
 
     def __init__(self, 
                  background_color: tuple = (0, 0, 0),
@@ -22,7 +22,10 @@ class ParticleVisualizer(Component):
                  fade_speed: float = 0.02,
                  triangle_size: int = 6,
                  trail_size: int = 5,
-                 trail_length: int = 5):  # How many previous positions to keep
+                 trail_length: int = 5,
+                 collision_color: tuple = (255, 255, 255),  # White collision circles
+                 max_collision_radius: int = 30,  # Maximum radius of collision circles
+                 collision_fade_speed: float = 0.1):  # How quickly collision circles fade
         super().__init__()
         self.background_color = background_color
         self.progress_color = progress_color
@@ -32,6 +35,9 @@ class ParticleVisualizer(Component):
         self.triangle_size = triangle_size
         self.trail_size = trail_size
         self.trail_length = trail_length
+        self.collision_color = collision_color
+        self.max_collision_radius = max_collision_radius
+        self.collision_fade_speed = collision_fade_speed
         
         # Dictionary to store previous positions
         self.particle_history = {}
@@ -43,10 +49,13 @@ class ParticleVisualizer(Component):
         self._screen = None
         self._trail_surface = None
         self._current_surface = None
+        self._collision_surface = None
         
         self.scale = None
         self.view_offset = None
         self.simulation_bounds = None
+        
+        self.active_collisions = []  # List of (x, y, age) tuples
         
     def setup(self, builder: Builder) -> None:
         pygame.init()
@@ -64,9 +73,15 @@ class ParticleVisualizer(Component):
         # Create surface for current particle positions
         self._current_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         
+        # Create collision surface for expanding circles
+        self._collision_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        
         self.start_time = pd.Timestamp(**builder.configuration.time.start)
         self.end_time = pd.Timestamp(**builder.configuration.time.end)
         self.clock = builder.time.clock()
+        
+        # Get reference to collisions component
+        self.collisions = builder.components.get_component("collisions")
         
         self._setup_unit_square_view()
 
@@ -172,6 +187,34 @@ class ParticleVisualizer(Component):
                 particle['theta']
             )
             pygame.draw.polygon(self._current_surface, particle_color, triangle_points)
+            
+    def _draw_collisions(self) -> None:
+        """Draw expanding circles at collision locations."""
+        self._collision_surface.fill((0, 0, 0, 0))  # Clear collision surface
+        
+        # Add new collisions
+        for x, y in self.collisions.current_collisions:
+            self.active_collisions.append((x, y, 0))  # Age starts at 0
+            
+        # Update and draw existing collisions
+        new_active_collisions = []
+        for x, y, age in self.active_collisions:
+            if age >= 1.0:  # Remove fully expanded collisions
+                continue
+                
+            # Calculate current radius and alpha
+            radius = int(age * self.max_collision_radius)
+            alpha = int(255 * (1 - age))
+            
+            # Draw the collision circle
+            screen_pos = self.sim_to_screen(x, y)
+            color = (*self.collision_color, alpha)
+            pygame.draw.circle(self._collision_surface, color, screen_pos, radius, 1)
+            
+            # Age the collision
+            new_active_collisions.append((x, y, age + self.collision_fade_speed))
+            
+        self.active_collisions = new_active_collisions
 
     def _draw_border(self) -> None:
         """Draw the border of the unit square."""
@@ -208,9 +251,13 @@ class ParticleVisualizer(Component):
         # Draw current particle positions
         self._draw_current_particles(pop)
         
+        # Draw collisions
+        self._draw_collisions()
+        
         # Compose final frame
         self._screen.fill(self.background_color)
         self._screen.blit(self._trail_surface, (0, 0))  # Draw trails first
+        self._screen.blit(self._collision_surface, (0, 0))  # Draw collision effects
         self._screen.blit(self._current_surface, (0, 0))  # Draw current particles on top
         self._draw_border()
         self._draw_progress_bar()
