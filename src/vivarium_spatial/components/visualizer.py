@@ -8,7 +8,7 @@ from vivarium.framework.event import Event
 from vivarium.framework.population import SimulantData
 
 class ParticleVisualizer(Component):
-    """A component that visualizes particles with motion trails in a unit square."""
+    """A component that visualizes particles with motion trails and collision trends."""
     
     @property
     def columns_required(self) -> Optional[List[str]]:
@@ -24,8 +24,9 @@ class ParticleVisualizer(Component):
                  trail_size: int = 5,
                  trail_length: int = 5,
                  collision_color: tuple = (200, 0, 0),
-                 max_collision_radius: int = 300,  # Maximum radius of collision circles
-                 collision_fade_speed: float = 0.05):  # How quickly collision circles fade
+                 max_collision_radius: int = 300,
+                 collision_fade_speed: float = 0.05,
+                 chart_size: tuple = (300, 150)):  # Width and height of trend chart
         super().__init__()
         self.background_color = background_color
         self.progress_color = progress_color
@@ -39,6 +40,12 @@ class ParticleVisualizer(Component):
         self.max_collision_radius = max_collision_radius
         self.collision_fade_speed = collision_fade_speed
         
+        # Chart settings
+        self.chart_size = chart_size
+        self.chart_padding = 20  # Padding around the chart
+        self.max_history_points = 100  # Number of time points to show
+        self.max_collisions_shown = 10  # Will auto-adjust if exceeded
+        
         # Dictionary to store previous positions
         self.particle_history = {}
         
@@ -46,16 +53,32 @@ class ParticleVisualizer(Component):
         self.low_whimsy_color = (41, 98, 255)    # Cool blue
         self.high_whimsy_color = (255, 89, 94)   # Warm red
         
+        # Colors for different whimsy levels in the chart
+        self.chart_colors = {
+            'low': (41, 98, 255),     # Cool blue
+            'medium': (147, 51, 234),  # Purple
+            'high': (255, 89, 94)      # Warm red
+        }
+        
+        # Initialize surfaces
         self._screen = None
         self._trail_surface = None
         self._current_surface = None
         self._collision_surface = None
+        self._chart_surface = None
         
         self.scale = None
         self.view_offset = None
         self.simulation_bounds = None
         
-        self.active_collisions = []  # List of (x, y, age) tuples
+        self.active_collisions = []
+        
+        # Initialize collision history
+        self.collision_history = {
+            'low': [],
+            'medium': [],
+            'high': []
+        }
         
     def setup(self, builder: Builder) -> None:
         pygame.init()
@@ -66,15 +89,12 @@ class ParticleVisualizer(Component):
         self._screen = pygame.display.set_mode((self.width, self.height), pygame.FULLSCREEN)
         pygame.display.set_caption("Particle Simulation")
         
-        # Create trail surface with alpha channel for fading trails
         self._trail_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        self._trail_surface.fill((0, 0, 0, 0))  # Fully transparent initially
+        self._trail_surface.fill((0, 0, 0, 0))
         
-        # Create surface for current particle positions
         self._current_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        
-        # Create collision surface for expanding circles
         self._collision_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        self._chart_surface = pygame.Surface(self.chart_size, pygame.SRCALPHA)
         
         self.start_time = pd.Timestamp(**builder.configuration.time.start)
         self.end_time = pd.Timestamp(**builder.configuration.time.end)
@@ -142,13 +162,36 @@ class ParticleVisualizer(Component):
             self.sim_to_screen(back2_x, back2_y)
         ]
 
+    def get_collision_trend_data(self, pop_index: pd.Index) -> None:
+        """Update collision trend data."""
+        pop = self.population_view.get(pop_index)
+        current_time = self.clock()
+        
+        # Get collisions in current timestep
+        current_collisions = pop[pop.last_collision_time == current_time]
+        
+        # Calculate counts by whimsy category
+        whimsy_bins = pd.cut(current_collisions.whimsy, 
+                            bins=[0, 1/3, 2/3, 1], 
+                            labels=['low', 'medium', 'high'],
+                            include_lowest=True)
+        counts = whimsy_bins.value_counts()
+        
+        # Update history
+        for category in ['low', 'medium', 'high']:
+            count = counts.get(category, 0)
+            self.collision_history[category].append(int(count))
+            
+            # Keep fixed number of points
+            if len(self.collision_history[category]) > self.max_history_points:
+                self.collision_history[category].pop(0)
+
     def _draw_frame_to_trail(self, population: pd.DataFrame) -> None:
         """Draw solid line trails using particle history, handling torus wrapping."""
         for idx, particle in population.iterrows():
             current_pos = (particle['x'], particle['y'])
             particle_color = (*self.get_color_for_whimsy(particle['whimsy']), 255)
             
-            # Update particle history
             if idx not in self.particle_history:
                 self.particle_history[idx] = []
             
@@ -156,24 +199,19 @@ class ParticleVisualizer(Component):
             if len(self.particle_history[idx]) > self.trail_length:
                 self.particle_history[idx].pop(0)
             
-            # Draw lines connecting historical positions
             positions = self.particle_history[idx]
             if len(positions) > 1:
                 for i in range(len(positions) - 1):
                     pos1 = positions[i]
                     pos2 = positions[i + 1]
                     
-                    # Check for wrap-around by looking at distance
                     dx = abs(pos2[0] - pos1[0])
                     dy = abs(pos2[1] - pos1[1])
                     
-                    # If distance is less than 0.5 in both directions, it's not a wrap-around
                     if dx < 0.5 and dy < 0.5:
                         point1 = self.sim_to_screen(*pos1)
                         point2 = self.sim_to_screen(*pos2)
-                        # Draw thick line first
                         pygame.draw.line(self._trail_surface, particle_color, point1, point2, width=self.trail_size)
-                        # Draw thin anti-aliased line on top for smoothness
                         pygame.draw.aaline(self._trail_surface, particle_color, point1, point2)
 
     def _draw_current_particles(self, population: pd.DataFrame) -> None:
@@ -216,6 +254,61 @@ class ParticleVisualizer(Component):
             
         self.active_collisions = new_active_collisions
 
+    def _draw_trend_chart(self) -> None:
+        """Draw the collision trend chart on its surface."""
+        self._chart_surface.fill((0, 0, 0, 180))  # Semi-transparent background
+        
+        # Calculate dimensions
+        chart_width = self.chart_size[0] - 2 * self.chart_padding
+        chart_height = self.chart_size[1] - 2 * self.chart_padding
+        
+        # Find max value for scaling
+        max_collisions = max(
+            max(max(history) if history else 0 for history in self.collision_history.values()),
+            1  # Prevent division by zero
+        )
+        
+        # Draw axes
+        pygame.draw.line(self._chart_surface, (200, 200, 200), 
+                        (self.chart_padding, self.chart_size[1] - self.chart_padding),
+                        (self.chart_size[0] - self.chart_padding, self.chart_size[1] - self.chart_padding))
+        pygame.draw.line(self._chart_surface, (200, 200, 200),
+                        (self.chart_padding, self.chart_padding),
+                        (self.chart_padding, self.chart_size[1] - self.chart_padding))
+        
+        # Draw trend lines for each category
+        for category, history in self.collision_history.items():
+            if not history:
+                continue
+                
+            points = []
+            for i, value in enumerate(history):
+                x = self.chart_padding + (i / (self.max_history_points - 1)) * chart_width
+                y = (self.chart_size[1] - self.chart_padding - 
+                     (value / max_collisions) * chart_height)
+                points.append((int(x), int(y)))
+            
+            if len(points) > 1:
+                pygame.draw.lines(self._chart_surface, self.chart_colors[category], False, points, 2)
+        
+        # Draw legend
+        legend_y = self.chart_padding
+        for category, color in self.chart_colors.items():
+            pygame.draw.line(self._chart_surface, color, 
+                           (self.chart_size[0] - 80, legend_y),
+                           (self.chart_size[0] - 60, legend_y), 2)
+            font = pygame.font.Font(None, 20)
+            text = font.render(category, True, color)
+            self._chart_surface.blit(text, (self.chart_size[0] - 55, legend_y - 7))
+            legend_y += 20
+            
+        # Draw scale
+        font = pygame.font.Font(None, 20)
+        max_label = font.render(str(max_collisions), True, (200, 200, 200))
+        self._chart_surface.blit(max_label, (5, self.chart_padding - 10))
+        zero_label = font.render('0', True, (200, 200, 200))
+        self._chart_surface.blit(zero_label, (5, self.chart_size[1] - self.chart_padding - 10))
+
     def _draw_border(self) -> None:
         """Draw the border of the unit square."""
         pygame.draw.rect(self._screen, self.border_color, 
@@ -239,31 +332,38 @@ class ParticleVisualizer(Component):
         pop = self.population_view.get(event.index)
         if pop.empty:
             return
+            
+        # Update collision trend data
+        self.get_collision_trend_data(event.index)
         
-        # Create and apply fade effect to trail surface
+        # Create and apply fade effect
         fade_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         fade_surface.fill((0, 0, 0, int(255 * self.fade_speed)))
         self._trail_surface.blit(fade_surface, (0, 0), special_flags=pygame.BLEND_RGBA_SUB)
         
-        # Draw new trails
+        # Draw all visualization elements
         self._draw_frame_to_trail(pop)
-        
-        # Draw current particle positions
         self._draw_current_particles(pop)
-        
-        # Draw collisions
         self._draw_collisions()
+        self._draw_trend_chart()
         
         # Compose final frame
         self._screen.fill(self.background_color)
-        self._screen.blit(self._trail_surface, (0, 0))  # Draw trails first
-        self._screen.blit(self._collision_surface, (0, 0))  # Draw collision effects
-        self._screen.blit(self._current_surface, (0, 0))  # Draw current particles on top
+        self._screen.blit(self._trail_surface, (0, 0))
+        self._screen.blit(self._collision_surface, (0, 0))
+        self._screen.blit(self._current_surface, (0, 0))
+        
+        # Position chart in top-right corner with some padding
+        chart_x = self.width - self.chart_size[0] - 20
+        chart_y = 20
+        self._screen.blit(self._chart_surface, (chart_x, chart_y))
+        
         self._draw_border()
         self._draw_progress_bar()
         
         pygame.display.flip()
         
+        # Handle events
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (
                 event.type == pygame.KEYDOWN and event.key in [pygame.K_ESCAPE, pygame.K_q]
