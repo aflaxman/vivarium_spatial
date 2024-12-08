@@ -1,8 +1,11 @@
-import numpy as np
+from typing import List
 import pandas as pd
-import sklearn.neighbors
-import networkx as nx
+import numpy as np
+from sklearn.neighbors import KDTree
 from vivarium import Component
+from vivarium.framework.engine import Builder
+from vivarium.framework.population import SimulantData
+from vivarium.framework.event import Event
 
 class Basic(Component):
     name = 'basic'
@@ -101,3 +104,51 @@ class Whimsy(Component):
         pop = self.population_view.get(index)
         # Scale the base angle change by whimsy value
         return angle * pop.whimsy
+
+class Collisions(Component):
+    """Component for handling particle collisions using KDTree for efficient neighbor finding"""
+    
+    @property
+    def columns_created(self) -> List[str]:
+        return []
+        
+    @property 
+    def columns_required(self) -> List[str]:
+        return ['x', 'y', 'theta']
+
+    def __init__(self):
+        super().__init__()
+        
+    def setup(self, builder: Builder) -> None:
+        """Setup collision parameters and randomness stream"""
+        self.critical_radius = 0.01  # Distance threshold for collision detection
+        self.randomness = builder.randomness.get_stream('particle.collisions')
+        
+    def on_time_step(self, event: Event) -> None:
+        """Check for collisions and update particle directions"""
+        pop = self.population_view.get(event.index)
+        if len(pop) < 2:  # Need at least 2 particles for collisions
+            return
+            
+        # Build KDTree from current particle positions
+        positions = pop[['x', 'y']].values
+        tree = KDTree(positions, leaf_size=2)
+        
+        # Find all pairs of particles within critical radius
+        # Returns a list of (i,j) indices for particles within radius
+        collision_pairs = tree.query_radius(positions, r=self.critical_radius, count_only=True)
+        
+        # Get particles with neighbors (arrays with length > 1)
+        collided_particles, = np.where(collision_pairs  > 1)
+        
+        if len(collided_particles) == 0:
+            return
+
+        # Generate new random angles for all collided particles
+        new_angles = self.randomness.get_draw(
+            pd.Index(collided_particles),
+            additional_key='collision_theta'
+        ) * 360.0            
+        new_angles.name = 'theta'
+
+        self.population_view.update(new_angles)

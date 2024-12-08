@@ -2,6 +2,7 @@ components:
     vivarium_spatial.components:
         - particle.Basic()
         - particle.Whimsy()
+        - particle.Collisions()
         - visualizer.ParticleVisualizer()
 
 configuration:
