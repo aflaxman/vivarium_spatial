@@ -26,7 +26,8 @@ class ParticleVisualizer(Component):
                  collision_color: tuple = (200, 0, 0),
                  max_collision_radius: int = 300,
                  collision_fade_speed: float = 0.05,
-                 chart_size: tuple = (300, 150)):  # Width and height of trend chart
+                 chart_size: tuple = (300, 150),  # Width and height of trend chart
+                 fps: int = 12):
         super().__init__()
         self.background_color = background_color
         self.progress_color = progress_color
@@ -79,6 +80,9 @@ class ParticleVisualizer(Component):
             'medium': [],
             'high': []
         }
+        
+        self.fps = fps
+        self.pygame_clock = pygame.time.Clock()  # Add pygame clock
         
     def setup(self, builder: Builder) -> None:
         pygame.init()
@@ -163,7 +167,6 @@ class ParticleVisualizer(Component):
         ]
 
     def get_collision_trend_data(self, pop_index: pd.Index) -> None:
-        """Update collision trend data."""
         pop = self.population_view.get(pop_index)
         current_time = self.clock()
         
@@ -175,17 +178,21 @@ class ParticleVisualizer(Component):
                             bins=[0, 1/3, 2/3, 1], 
                             labels=['low', 'medium', 'high'],
                             include_lowest=True)
-        counts = whimsy_bins.value_counts()
+        current_counts = whimsy_bins.value_counts()
         
-        # Update history
+        # Update history with cumulative counts
         for category in ['low', 'medium', 'high']:
-            count = counts.get(category, 0)
-            self.collision_history[category].append(int(count))
+            count = current_counts.get(category, 0)
+            # Add to previous cumulative value or start at current count if no history
+            new_value = count
+            if self.collision_history[category]:
+                new_value += self.collision_history[category][-1]
+            self.collision_history[category].append(int(new_value))
             
             # Keep fixed number of points
             if len(self.collision_history[category]) > self.max_history_points:
                 self.collision_history[category].pop(0)
-
+    
     def _draw_frame_to_trail(self, population: pd.DataFrame) -> None:
         """Draw solid line trails using particle history, handling torus wrapping."""
         for idx, particle in population.iterrows():
@@ -285,7 +292,7 @@ class ParticleVisualizer(Component):
             for i, value in enumerate(history):
                 x = self.chart_padding + (i / (self.max_history_points - 1)) * chart_width
                 y = (self.chart_size[1] - self.chart_padding - 
-                     (value / max_collisions) * chart_height)
+                    (value / max_collisions) * chart_height)
                 points.append((int(x), int(y)))
             
             if len(points) > 1:
@@ -295,20 +302,24 @@ class ParticleVisualizer(Component):
         legend_y = self.chart_padding
         for category, color in self.chart_colors.items():
             pygame.draw.line(self._chart_surface, color, 
-                           (self.chart_size[0] - 80, legend_y),
-                           (self.chart_size[0] - 60, legend_y), 2)
+                        (self.chart_size[0] - 80, legend_y),
+                        (self.chart_size[0] - 60, legend_y), 2)
             font = pygame.font.Font(None, 20)
-            text = font.render(category, True, color)
+            text = font.render(f"{category}: {self.collision_history[category][-1]}", True, color)
             self._chart_surface.blit(text, (self.chart_size[0] - 55, legend_y - 7))
             legend_y += 20
             
-        # Draw scale
+        # Draw scale with "Total Collisions" label
         font = pygame.font.Font(None, 20)
         max_label = font.render(str(max_collisions), True, (200, 200, 200))
         self._chart_surface.blit(max_label, (5, self.chart_padding - 10))
         zero_label = font.render('0', True, (200, 200, 200))
         self._chart_surface.blit(zero_label, (5, self.chart_size[1] - self.chart_padding - 10))
-
+        
+        # Add "Cumulative Collisions" title
+        title = font.render('Cumulative Collisions', True, (200, 200, 200))
+        self._chart_surface.blit(title, (self.chart_padding, 5))
+    
     def _draw_border(self) -> None:
         """Draw the border of the unit square."""
         pygame.draw.rect(self._screen, self.border_color, 
@@ -323,6 +334,12 @@ class ParticleVisualizer(Component):
         bar_width = int(self.width * progress)
         progress_rect = pygame.Rect(0, 0, bar_width, bar_height)
         pygame.draw.rect(self._screen, self.progress_color, progress_rect)
+
+    def _draw_fps(self) -> None:
+        """Draw the current FPS in the corner of the screen."""
+        font = pygame.font.Font(None, 24)
+        fps_text = font.render(f'FPS: {int(self.pygame_clock.get_fps())}', True, (200, 200, 200))
+        self._screen.blit(fps_text, (10, 10))
 
     def on_time_step(self, event: Event) -> None:
         """Update visualization each time step."""
@@ -360,9 +377,13 @@ class ParticleVisualizer(Component):
         
         self._draw_border()
         self._draw_progress_bar()
+        self._draw_fps()
         
         pygame.display.flip()
         
+        # Control frame rate
+        self.pygame_clock.tick(self.fps)
+
         # Handle events
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (

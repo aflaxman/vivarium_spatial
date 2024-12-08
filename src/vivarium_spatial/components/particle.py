@@ -15,13 +15,13 @@ class Basic(Component):
         return ['x', 'y', 'theta']
     
     def setup(self, builder):
-        self.near_radius = 1
-        self.max_step_size = 0.01
-        
+        self.step_size = 0.01
+        self.overall_max_angle_change = 30
+
         # Register the max angle change pipeline
         self.max_angle_change = builder.value.register_value_producer(
             'particle.max_angle_change',
-            source=lambda index: pd.Series(10.0, index=index)
+            source=lambda index: pd.Series(self.overall_max_angle_change, index=index)
         )
 
         self.randomness = builder.randomness.get_stream('particle.basic')
@@ -50,15 +50,12 @@ class Basic(Component):
         """Update particle positions by moving random amounts in their theta directions"""
         pop = self.population_view.get(event.index)
         
-        # Generate random step sizes between 0 and max_step_size
-        steps = self.randomness.get_draw(pop.index, additional_key='step') * self.max_step_size
-        
         # Convert angles to radians for calculation
         theta_rad = np.deg2rad(pop['theta'])
         
         # Calculate position updates using trigonometry
-        dx = steps * np.cos(theta_rad)
-        dy = steps * np.sin(theta_rad)
+        dx = self.step_size * np.cos(theta_rad)
+        dy = self.step_size * np.sin(theta_rad)
         
         # Get max angle change from pipeline, which may be modified by whimsy
         max_angle = self.max_angle_change(pop.index)
@@ -116,10 +113,6 @@ class Collisions(Component):
     @property 
     def columns_required(self) -> List[str]:
         return ['x', 'y', 'theta']
-
-    def __init__(self):
-        super().__init__()
-        self.current_collisions = []  # List to store current collision locations
         
     def setup(self, builder: Builder) -> None:
         """Setup collision parameters and randomness stream"""
@@ -127,6 +120,7 @@ class Collisions(Component):
         self.randomness = builder.randomness.get_stream('particle.collisions')
         self.clock = builder.time.clock()
         self.collisions = 0
+        self.current_collisions = []  # List to store current collision locations for visualization
         
     def on_initialize_simulants(self, pop_data: SimulantData) -> None:
         self.population_view.update(pd.DataFrame({
