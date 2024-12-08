@@ -19,24 +19,10 @@ class ParticleVisualizer(Component):
                  progress_color: tuple = (0, 255, 0),
                  border_color: tuple = (100, 100, 100),
                  border_width: int = 2,
-                 fade_speed: float = 0.005,
-                 triangle_size: int = 6):
-        """
-        Parameters
-        ----------
-        background_color : tuple
-            RGB color for the background
-        progress_color : tuple
-            RGB color for the progress bar
-        border_color : tuple
-            RGB color for the unit square border
-        border_width : int
-            Width of the border in pixels
-        fade_speed : float
-            Rate at which trails fade (0-1)
-        triangle_size : int
-            Base size of the triangle particles
-        """
+                 fade_speed: float = 0.02,
+                 triangle_size: int = 6,
+                 trail_size: int = 5,
+                 trail_length: int = 5):  # How many previous positions to keep
         super().__init__()
         self.background_color = background_color
         self.progress_color = progress_color
@@ -44,40 +30,44 @@ class ParticleVisualizer(Component):
         self.border_width = border_width
         self.fade_speed = fade_speed
         self.triangle_size = triangle_size
+        self.trail_size = trail_size
+        self.trail_length = trail_length
         
-        # Define color gradient endpoints (tasteful blue to red)
+        # Dictionary to store previous positions
+        self.particle_history = {}
+        
+        # Define color gradient endpoints
         self.low_whimsy_color = (41, 98, 255)    # Cool blue
         self.high_whimsy_color = (255, 89, 94)   # Warm red
         
         self._screen = None
         self._trail_surface = None
+        self._current_surface = None
         
-        # Will be set in setup
         self.scale = None
         self.view_offset = None
         self.simulation_bounds = None
         
     def setup(self, builder: Builder) -> None:
-        """Initialize pygame and set up the display window."""
         pygame.init()
         
-        # Get the current screen info for fullscreen mode
         screen_info = pygame.display.Info()
         self.width = screen_info.current_w
         self.height = screen_info.current_h
         self._screen = pygame.display.set_mode((self.width, self.height), pygame.FULLSCREEN)
         pygame.display.set_caption("Particle Simulation")
         
-        # Create trail surface with alpha channel
+        # Create trail surface with alpha channel for fading trails
         self._trail_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        self._trail_surface.fill((*self.background_color, 255))  # Include alpha channel
+        self._trail_surface.fill((0, 0, 0, 0))  # Fully transparent initially
         
-        # Store simulation time information for progress bar
+        # Create surface for current particle positions
+        self._current_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        
         self.start_time = pd.Timestamp(**builder.configuration.time.start)
         self.end_time = pd.Timestamp(**builder.configuration.time.end)
         self.clock = builder.time.clock()
         
-        # Calculate view parameters for unit square
         self._setup_unit_square_view()
 
     def _setup_unit_square_view(self) -> None:
@@ -115,17 +105,13 @@ class ParticleVisualizer(Component):
     
     def calculate_triangle_points(self, x: float, y: float, theta: float) -> List[Tuple[int, int]]:
         """Calculate the three points of an isosceles triangle facing in the direction of theta."""
-        # Convert angle to radians
         angle_rad = np.deg2rad(theta)
-        
-        # Calculate the three points of the isosceles triangle
-        # The base is perpendicular to the direction, and the point faces the direction
         
         # Forward point
         front_x = x + self.triangle_size * 1.5 * np.cos(angle_rad) / self.scale
         front_y = y + self.triangle_size * 1.5 * np.sin(angle_rad) / self.scale
         
-        # Back points (perpendicular to direction)
+        # Back points
         back_angle_1 = angle_rad + np.pi/2
         back_angle_2 = angle_rad - np.pi/2
         
@@ -135,65 +121,58 @@ class ParticleVisualizer(Component):
         back2_x = x + self.triangle_size * np.cos(back_angle_2) / self.scale
         back2_y = y + self.triangle_size * np.sin(back_angle_2) / self.scale
         
-        # Convert all points to screen coordinates
-        screen_points = [
+        return [
             self.sim_to_screen(front_x, front_y),
             self.sim_to_screen(back1_x, back1_y),
             self.sim_to_screen(back2_x, back2_y)
         ]
-        
-        return screen_points
 
-    def on_time_step(self, event: Event) -> None:
-        """Update visualization each time step."""
-        if self.scale is None:
-            return
-            
-        pop = self.population_view.get(event.index)
-        if pop.empty:
-            return
-        
-        # Create fade surface
-        fade_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        fade_surface.fill((0, 0, 0, int(255 * self.fade_speed)))
-        
-        # Apply fade effect
-        self._trail_surface.blit(fade_surface, (0, 0), special_flags=pygame.BLEND_RGBA_SUB)
-        
-        # Draw current frame to trail surface
-        self._draw_frame_to_trail(pop)
-        
-        # Draw everything to screen
-        self._screen.fill(self.background_color)
-        self._screen.blit(self._trail_surface, (0, 0))
-        self._draw_border()
-        self._draw_progress_bar()
-        
-        pygame.display.flip()
-        
-        # Handle window events
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT or (
-                event.type == pygame.KEYDOWN and event.key in [pygame.K_ESCAPE, pygame.K_q]
-            ):
-                pygame.quit()
-                
     def _draw_frame_to_trail(self, population: pd.DataFrame) -> None:
-        """Draw the current frame to the trail surface."""
-        for _, particle in population.iterrows():
-            # Get color based on whimsy
-            particle_color = self.get_color_for_whimsy(particle['whimsy'])
+        """Draw solid line trails using particle history, handling torus wrapping."""
+        for idx, particle in population.iterrows():
+            current_pos = (particle['x'], particle['y'])
+            particle_color = (*self.get_color_for_whimsy(particle['whimsy']), 255)
             
-            # Calculate triangle points
+            # Update particle history
+            if idx not in self.particle_history:
+                self.particle_history[idx] = []
+            
+            self.particle_history[idx].append(current_pos)
+            if len(self.particle_history[idx]) > self.trail_length:
+                self.particle_history[idx].pop(0)
+            
+            # Draw lines connecting historical positions
+            positions = self.particle_history[idx]
+            if len(positions) > 1:
+                for i in range(len(positions) - 1):
+                    pos1 = positions[i]
+                    pos2 = positions[i + 1]
+                    
+                    # Check for wrap-around by looking at distance
+                    dx = abs(pos2[0] - pos1[0])
+                    dy = abs(pos2[1] - pos1[1])
+                    
+                    # If distance is less than 0.5 in both directions, it's not a wrap-around
+                    if dx < 0.5 and dy < 0.5:
+                        point1 = self.sim_to_screen(*pos1)
+                        point2 = self.sim_to_screen(*pos2)
+                        # Draw thick line first
+                        pygame.draw.line(self._trail_surface, particle_color, point1, point2, width=self.trail_size)
+                        # Draw thin anti-aliased line on top for smoothness
+                        pygame.draw.aaline(self._trail_surface, particle_color, point1, point2)
+
+    def _draw_current_particles(self, population: pd.DataFrame) -> None:
+        """Draw triangular particles to the current surface."""
+        self._current_surface.fill((0, 0, 0, 0))  # Clear current surface
+        for _, particle in population.iterrows():
+            particle_color = (*self.get_color_for_whimsy(particle['whimsy']), 255)
             triangle_points = self.calculate_triangle_points(
                 particle['x'], 
                 particle['y'], 
                 particle['theta']
             )
-            
-            # Draw filled triangle
-            pygame.draw.polygon(self._trail_surface, particle_color, triangle_points)
-            
+            pygame.draw.polygon(self._current_surface, particle_color, triangle_points)
+
     def _draw_border(self) -> None:
         """Draw the border of the unit square."""
         pygame.draw.rect(self._screen, self.border_color, 
@@ -208,3 +187,38 @@ class ParticleVisualizer(Component):
         bar_width = int(self.width * progress)
         progress_rect = pygame.Rect(0, 0, bar_width, bar_height)
         pygame.draw.rect(self._screen, self.progress_color, progress_rect)
+
+    def on_time_step(self, event: Event) -> None:
+        """Update visualization each time step."""
+        if self.scale is None:
+            return
+            
+        pop = self.population_view.get(event.index)
+        if pop.empty:
+            return
+        
+        # Create and apply fade effect to trail surface
+        fade_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        fade_surface.fill((0, 0, 0, int(255 * self.fade_speed)))
+        self._trail_surface.blit(fade_surface, (0, 0), special_flags=pygame.BLEND_RGBA_SUB)
+        
+        # Draw new trails
+        self._draw_frame_to_trail(pop)
+        
+        # Draw current particle positions
+        self._draw_current_particles(pop)
+        
+        # Compose final frame
+        self._screen.fill(self.background_color)
+        self._screen.blit(self._trail_surface, (0, 0))  # Draw trails first
+        self._screen.blit(self._current_surface, (0, 0))  # Draw current particles on top
+        self._draw_border()
+        self._draw_progress_bar()
+        
+        pygame.display.flip()
+        
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT or (
+                event.type == pygame.KEYDOWN and event.key in [pygame.K_ESCAPE, pygame.K_q]
+            ):
+                pygame.quit()
