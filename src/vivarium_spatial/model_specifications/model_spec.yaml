@@ -18,6 +18,11 @@ configuration:
       year: 2000
       month: 10
       day: 1
-    step_size: 10
+    step_size: 1
   population:
     population_size: 30
+  stratification:
+    collisions:
+      include:
+        - "whimsy"
+      exclude: []

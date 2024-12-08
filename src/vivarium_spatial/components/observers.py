@@ -27,7 +27,7 @@ class CollisionObserver(PublicHealthObserver):
 
     @property
     def columns_required(self) -> List[str]:
-        return ["collision_count", "last_collision_time"]
+        return ["collision_count", "last_collision_time", "whimsy"]
 
     #####################
     # Lifecycle methods #
@@ -35,6 +35,7 @@ class CollisionObserver(PublicHealthObserver):
 
     def setup(self, builder: Builder) -> None:
         self.clock = builder.time.clock()
+        self.register_stratifications(builder)
 
     #################
     # Setup methods #
@@ -43,17 +44,33 @@ class CollisionObserver(PublicHealthObserver):
     def get_configuration(self, builder: Builder):
         return builder.configuration.stratification.collisions
 
+    def register_stratifications(self, builder: Builder) -> None:
+        """Register stratifications used by this observer"""
+        builder.results.register_stratification(
+            name='whimsy',
+            categories=['low', 'medium', 'high'],
+            mapper=self.map_whimsy_categories,
+            requires_columns=['whimsy'],
+            is_vectorized=True
+        )
+
     def register_observations(self, builder: Builder):
         self.register_adding_observation(
             builder=builder,
             name="collision_counts",
             pop_filter='',
             when="collect_metrics",
-            requires_columns=["collision_count", "last_collision_time"],
+            requires_columns=["collision_count", "last_collision_time", "whimsy"],
             additional_stratifications=self.configuration.include,
             excluded_stratifications=self.configuration.exclude,
             aggregator=self.aggregate_collisions
         )
+
+    def map_whimsy_categories(self, pop: pd.DataFrame) -> pd.Series:
+        """Maps whimsy values to categories"""
+        # Create bins based on whimsy values
+        cuts = pd.qcut(pop.whimsy, q=3, labels=['low', 'medium', 'high'])
+        return cuts
 
     ###############
     # Aggregators #
