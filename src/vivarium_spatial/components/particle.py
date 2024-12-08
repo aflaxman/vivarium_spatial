@@ -14,7 +14,12 @@ class Basic(Component):
     def setup(self, builder):
         self.near_radius = 1
         self.max_step_size = 0.01
-        self.max_angle_change = 10
+        
+        # Register the max angle change pipeline
+        self.max_angle_change = builder.value.register_value_producer(
+            'particle.max_angle_change',
+            source=lambda index: pd.Series(10.0, index=index)
+        )
 
         self.randomness = builder.randomness.get_stream('particle.basic')
                 
@@ -51,43 +56,48 @@ class Basic(Component):
         # Calculate position updates using trigonometry
         dx = steps * np.cos(theta_rad)
         dy = steps * np.sin(theta_rad)
-        dtheta = (self.randomness.get_draw(pop.index, additional_key='angle')-.5) * 2*self.max_angle_change
+        
+        # Get max angle change from pipeline, which may be modified by whimsy
+        max_angle = self.max_angle_change(pop.index)
+        dtheta = (self.randomness.get_draw(pop.index, additional_key='angle')-.5) * 2 * max_angle
         
         # Update positions
         pop['x'] = (pop['x'] + dx) % 1.0  # Wrap around unit square using modulo
         pop['y'] = (pop['y'] + dy) % 1.0
         pop['theta'] = (pop['theta'] + dtheta) % 360.0
-        # # Get current positions for neighbor calculation
-        # positions = pop[['x', 'y']].values
         
-        # # Find neighbors within radius
-        # nbrs = sklearn.neighbors.NearestNeighbors(radius=self.near_radius)
-        # nbrs.fit(positions)
-        # neighbor_graph = nbrs.radius_neighbors_graph(positions)
-        
-        # # Convert to networkx graph for analysis
-        # G = nx.from_scipy_sparse_array(neighbor_graph)
-        
-        # Update the population state
         self.population_view.update(pop)
         
         return pop
 
-    def near_frozen(self, pop):
-        not_frozen = pop[pop.frozen.isnull()].loc[:, ['x', 'y', 'z']]
-        if len(not_frozen) == 0:
-            return pd.Series(dtype='float64')
-
-        frozen = pop[~pop.frozen.isnull()].loc[:, ['x', 'y', 'z']]
-        X = frozen.values
+class Whimsy(Component):
+    """Component that gives each particle a whimsy value and modifies their max angle change"""
+    
+    @property
+    def columns_created(self):
+        return ['whimsy']
+    
+    def setup(self, builder):
+        self.randomness = builder.randomness.get_stream('particle.whimsy')
         
-        tree = sklearn.neighbors.KDTree(X, leaf_size=2)
-        
-        num_near = tree.query_radius(not_frozen.values, r=self.config.near_radius, count_only=True)
-        to_freeze = not_frozen[(num_near > 0)].index
-        if len(to_freeze) == 0:
-            return pd.Series(dtype='float64')
-        index_near = tree.query_radius(not_frozen.loc[to_freeze].values, r=self.config.near_radius, count_only=False)
-        
-        return pd.Series(map(lambda x:frozen.index[x[0]], # HACK: get the index of the first frozen node close to this one
-                             index_near), index=to_freeze)
+        # Register modifier for max angle change pipeline
+        builder.value.register_value_modifier(
+            'particle.max_angle_change',
+            modifier=self.modify_max_angle_change,
+            requires_columns=['whimsy']
+        )
+    
+    def on_initialize_simulants(self, simulant_data):
+        """Initialize whimsy values uniformly between 0 and 1"""
+        pop = pd.DataFrame({
+            'whimsy': self.randomness.get_draw(simulant_data.index)
+        })
+        self.population_view.update(pop)
+    
+    def modify_max_angle_change(self, index, angle):
+        """Modify max angle change based on whimsy.
+        Low whimsy particles will have very small angle changes,
+        high whimsy particles will have larger angle changes."""
+        pop = self.population_view.get(index)
+        # Scale the base angle change by whimsy value
+        return angle * pop.whimsy

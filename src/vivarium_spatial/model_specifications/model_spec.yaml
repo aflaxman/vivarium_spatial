@@ -1,6 +1,7 @@
 components:
     vivarium_spatial.components:
         - particle.Basic()
+        - particle.Whimsy()
         - visualizer.ParticleVisualizer()
 
 configuration:
@@ -17,4 +18,4 @@ configuration:
       day: 1
     step_size: .1
   population:
-    population_size: 10
+    population_size: 30
