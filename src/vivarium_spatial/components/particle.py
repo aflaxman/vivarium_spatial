@@ -2,6 +2,7 @@ from typing import List
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 from sklearn.neighbors import KDTree
 from vivarium import Component
 from vivarium.framework.engine import Builder
@@ -16,9 +17,14 @@ class Basic(Component):
     def columns_created(self):
         return ["x", "y", "theta"]
 
+    CONFIGURATION_DEFAULTS = {
+        "particle": {"basic": {"step_size": 0.01, "overall_max_angle_change": 30}}
+    }
+
     def setup(self, builder):
-        self.step_size = 0.01
-        self.overall_max_angle_change = 30
+        config = builder.configuration.particle.basic
+        self.step_size = config.step_size
+        self.overall_max_angle_change = config.overall_max_angle_change
 
         # Register the max angle change pipeline
         self.max_angle_change = builder.value.register_value_producer(
@@ -80,14 +86,16 @@ class Basic(Component):
 class Whimsy(Component):
     """Component that gives each particle a whimsy value and modifies their max angle change"""
 
+    CONFIGURATION_DEFAULTS = {"particle": {"whimsy": {"alpha": 1, "beta": 1}}}
+
     @property
     def columns_created(self):
         return ["whimsy"]
 
     def setup(self, builder):
+        self.config = builder.configuration.particle.whimsy
         self.randomness = builder.randomness.get_stream("particle.whimsy")
 
-        # Register modifier for max angle change pipeline
         builder.value.register_value_modifier(
             "particle.max_angle_change",
             modifier=self.modify_max_angle_change,
@@ -95,16 +103,14 @@ class Whimsy(Component):
         )
 
     def on_initialize_simulants(self, simulant_data):
-        """Initialize whimsy values uniformly between 0 and 1"""
-        pop = pd.DataFrame({"whimsy": self.randomness.get_draw(simulant_data.index)})
+        """Initialize whimsy values using Beta distribution"""
+        draws = self.randomness.get_draw(simulant_data.index)
+        whimsy = stats.beta.ppf(draws, self.config.alpha, self.config.beta)
+        pop = pd.DataFrame({"whimsy": whimsy})
         self.population_view.update(pop)
 
     def modify_max_angle_change(self, index, angle):
-        """Modify max angle change based on whimsy.
-        Low whimsy particles will have very small angle changes,
-        high whimsy particles will have larger angle changes."""
         pop = self.population_view.get(index)
-        # Scale the base angle change by whimsy value
         return angle * pop.whimsy
 
 
@@ -119,9 +125,11 @@ class Collisions(Component):
     def columns_required(self) -> List[str]:
         return ["x", "y", "theta"]
 
-    def setup(self, builder: Builder) -> None:
-        """Setup collision parameters and randomness stream"""
-        self.critical_radius = 0.01  # Distance threshold for collision detection
+    CONFIGURATION_DEFAULTS = {"particle": {"collisions": {"critical_radius": 0.01}}}
+
+    def setup(self, builder):
+        config = builder.configuration.particle.collisions
+        self.critical_radius = config.critical_radius
         self.randomness = builder.randomness.get_stream("particle.collisions")
         self.clock = builder.time.clock()
         self.collisions = 0
@@ -200,10 +208,14 @@ class Flock(Component):
         super().__init__()
         self.current_flocks = []  # List to store current flock centers
 
-    def setup(self, builder: Builder) -> None:
-        """Setup flocking parameters and randomness stream"""
-        self.flock_radius = 0.05  # Distance threshold for neighbor detection
-        self.alignment_strength = 0.91  # How strongly to align with neighbors (0-1)
+    CONFIGURATION_DEFAULTS = {
+        "particle": {"flock": {"radius": 0.05, "alignment_strength": 0.91}}
+    }
+
+    def setup(self, builder):
+        config = builder.configuration.particle.flock
+        self.flock_radius = config.radius
+        self.alignment_strength = config.alignment_strength
         self.randomness = builder.randomness.get_stream("particle.flocking")
         self.clock = builder.time.clock()
         self.flock_updates = 0

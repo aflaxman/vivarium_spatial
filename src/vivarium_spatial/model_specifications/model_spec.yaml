@@ -8,6 +8,18 @@ components:
         - observers.CollisionObserver()
 
 configuration:
+  particle:
+    basic:
+      step_size: 0.01
+      overall_max_angle_change: 30
+    whimsy:
+      alpha: 1
+      beta: 1
+    collisions:  
+      critical_radius: 0.01
+    flock:
+      radius: 0.05
+      alignment_strength: 0.1
   randomness:
     random_seed: 17
   time:
