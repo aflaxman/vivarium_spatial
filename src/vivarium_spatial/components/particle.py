@@ -110,17 +110,17 @@ class Whimsy(Component):
 
 class SpatialIndex(Component):
     """Simple spatial indexing component that maintains a KDTree of current positions."""
-    
+
     name = "particle_spatial_index"
-    
+
     @property
     def columns_required(self) -> List[str]:
         return ["x", "y"]
-    
+
     def setup(self, builder: Builder) -> None:
         self._current_tree = None
         self._current_positions = None
-    
+
     def on_time_step(self, event: Event) -> None:
         """Rebuild the KDTree with current positions"""
         pop = self.population_view.get(event.index)
@@ -128,22 +128,22 @@ class SpatialIndex(Component):
             self._current_tree = None
             self._current_positions = None
             return
-            
+
         self._current_positions = pop[["x", "y"]].values
         self._current_tree = KDTree(self._current_positions)
-    
+
     def get_neighbor_pairs(self, radius: float) -> Optional[Set[Tuple[int, int]]]:
         """Get all pairs of particles within radius using efficient pair query."""
         if self._current_tree is None:
             return None
-            
+
         return self._current_tree.query_pairs(radius)
-    
+
     def query_radius(self, radius: float) -> Optional[List[np.ndarray]]:
         """Get neighbor indices for each particle within radius."""
         if self._current_tree is None:
             return None
-            
+
         return self._current_tree.query_ball_point(self._current_positions, radius)
 
 
@@ -167,14 +167,13 @@ class Collisions(Component):
         self.clock = builder.time.clock()
         self.collisions = 0
         self.current_collisions = []
-        
+
         self.spatial_index = builder.components.get_component("particle_spatial_index")
 
     def on_initialize_simulants(self, pop_data: SimulantData) -> None:
         self.population_view.update(
             pd.DataFrame(
-                {"collision_count": 0, "last_collision_time": pd.NaT}, 
-                index=pop_data.index
+                {"collision_count": 0, "last_collision_time": pd.NaT}, index=pop_data.index
             )
         )
 
@@ -189,10 +188,10 @@ class Collisions(Component):
         if not pairs:
             self.current_collisions = []
             return
-            
+
         # Convert pairs to unique particle indices
         collided_particles = np.unique(np.array(list(pairs)).ravel())
-        
+
         self.collisions += len(collided_particles)
 
         # Store collision locations
@@ -201,17 +200,21 @@ class Collisions(Component):
         ]
 
         # Generate new random angles for all collided particles
-        new_angles = self.randomness.get_draw(
-            pd.Index(collided_particles), 
-            additional_key="collision_theta"
-        ) * 360.0
+        new_angles = (
+            self.randomness.get_draw(
+                pd.Index(collided_particles), additional_key="collision_theta"
+            )
+            * 360.0
+        )
 
         # Update collision stats
-        updates = pd.DataFrame({
-            "theta": new_angles,
-            "collision_count": pop.loc[new_angles.index, "collision_count"] + 1,
-            "last_collision_time": pd.Series(self.clock(), index=new_angles.index),
-        })
+        updates = pd.DataFrame(
+            {
+                "theta": new_angles,
+                "collision_count": pop.loc[new_angles.index, "collision_count"] + 1,
+                "last_collision_time": pd.Series(self.clock(), index=new_angles.index),
+            }
+        )
 
         self.population_view.update(updates)
 
@@ -241,7 +244,7 @@ class Flock(Component):
         self.randomness = builder.randomness.get_stream("particle.flocking")
         self.clock = builder.time.clock()
         self.flock_updates = 0
-        
+
         self.spatial_index = builder.components.get_component("particle_spatial_index")
 
     def on_time_step(self, event: Event) -> None:
@@ -269,8 +272,9 @@ class Flock(Component):
                 avg_theta = np.mean(neighbor_thetas)
                 # Interpolate between current direction and neighbor average
                 current_theta = pop.iloc[i]["theta"]
-                new_theta = ((1 - self.alignment_strength) * current_theta + 
-                           self.alignment_strength * avg_theta)
+                new_theta = (
+                    1 - self.alignment_strength
+                ) * current_theta + self.alignment_strength * avg_theta
 
                 particles_to_update.append(i)
                 new_thetas.append(new_theta)
