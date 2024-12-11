@@ -1,9 +1,9 @@
-from typing import List
+from typing import List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
 from scipy import stats
-from sklearn.neighbors import KDTree
+from scipy.spatial import KDTree  # Changed to scipy KDTree
 from vivarium import Component
 from vivarium.framework.engine import Builder
 from vivarium.framework.event import Event
@@ -36,13 +36,7 @@ class Basic(Component):
 
     def on_initialize_simulants(self, simulant_data):
         """Start new simulants at random location in unit square,
-        with random direction in degrees [0, 360)
-
-        Parameters
-        ----------
-        simulant_data : SimulantData
-            Data about the new simulants to initialize
-        """
+        with random direction in degrees [0, 360)"""
         pop = pd.DataFrame(index=simulant_data.index)
 
         # Generate random x,y coordinates in [0,1) x [0,1)
@@ -114,8 +108,47 @@ class Whimsy(Component):
         return angle * pop.whimsy
 
 
+class SpatialIndex(Component):
+    """Simple spatial indexing component that maintains a KDTree of current positions."""
+    
+    name = "particle_spatial_index"
+    
+    @property
+    def columns_required(self) -> List[str]:
+        return ["x", "y"]
+    
+    def setup(self, builder: Builder) -> None:
+        self._current_tree = None
+        self._current_positions = None
+    
+    def on_time_step(self, event: Event) -> None:
+        """Rebuild the KDTree with current positions"""
+        pop = self.population_view.get(event.index)
+        if len(pop) < 2:
+            self._current_tree = None
+            self._current_positions = None
+            return
+            
+        self._current_positions = pop[["x", "y"]].values
+        self._current_tree = KDTree(self._current_positions)
+    
+    def get_neighbor_pairs(self, radius: float) -> Optional[Set[Tuple[int, int]]]:
+        """Get all pairs of particles within radius using efficient pair query."""
+        if self._current_tree is None:
+            return None
+            
+        return self._current_tree.query_pairs(radius)
+    
+    def query_radius(self, radius: float) -> Optional[List[np.ndarray]]:
+        """Get neighbor indices for each particle within radius."""
+        if self._current_tree is None:
+            return None
+            
+        return self._current_tree.query_ball_point(self._current_positions, radius)
+
+
 class Collisions(Component):
-    """Component for handling particle collisions using KDTree for efficient neighbor finding"""
+    """Component for handling particle collisions using shared spatial index"""
 
     @property
     def columns_created(self) -> List[str]:
@@ -133,62 +166,52 @@ class Collisions(Component):
         self.randomness = builder.randomness.get_stream("particle.collisions")
         self.clock = builder.time.clock()
         self.collisions = 0
-        self.current_collisions = (
-            []
-        )  # List to store current collision locations for visualization
+        self.current_collisions = []
+        
+        self.spatial_index = builder.components.get_component("particle_spatial_index")
 
     def on_initialize_simulants(self, pop_data: SimulantData) -> None:
         self.population_view.update(
             pd.DataFrame(
-                {"collision_count": 0, "last_collision_time": pd.NaT}, index=pop_data.index
+                {"collision_count": 0, "last_collision_time": pd.NaT}, 
+                index=pop_data.index
             )
         )
 
     def on_time_step(self, event: Event) -> None:
         """Check for collisions and update particle directions"""
         pop = self.population_view.get(event.index)
-        if len(pop) < 2:  # Need at least 2 particles for collisions
+        if len(pop) < 2:
             return
 
-        # Build KDTree from current particle positions
-        positions = pop[["x", "y"]].values
-        tree = KDTree(positions, leaf_size=2)
-
-        # Find all pairs of particles within critical radius
-        collision_pairs = tree.query_radius(
-            positions, r=self.critical_radius, count_only=True
-        )
-
-        # Get particles with neighbors (arrays with length > 1)
-        (collided_particles,) = np.where(collision_pairs > 1)
-
-        if len(collided_particles) == 0:
-            self.current_collisions = []  # Clear current collisions
+        # Use more efficient pair query for collisions
+        pairs = self.spatial_index.get_neighbor_pairs(self.critical_radius)
+        if not pairs:
+            self.current_collisions = []
             return
-
+            
+        # Convert pairs to unique particle indices
+        collided_particles = np.unique(np.array(list(pairs)).ravel())
+        
         self.collisions += len(collided_particles)
 
-        # Store collision locations for visualization
+        # Store collision locations
         self.current_collisions = [
             (pop.iloc[i]["x"], pop.iloc[i]["y"]) for i in collided_particles
         ]
 
         # Generate new random angles for all collided particles
-        new_angles = (
-            self.randomness.get_draw(
-                pd.Index(collided_particles), additional_key="collision_theta"
-            )
-            * 360.0
-        )
+        new_angles = self.randomness.get_draw(
+            pd.Index(collided_particles), 
+            additional_key="collision_theta"
+        ) * 360.0
 
         # Update collision stats
-        updates = pd.DataFrame(
-            {
-                "theta": new_angles,
-                "collision_count": pop.loc[new_angles.index, "collision_count"] + 1,
-                "last_collision_time": pd.Series(self.clock(), index=new_angles.index),
-            }
-        )
+        updates = pd.DataFrame({
+            "theta": new_angles,
+            "collision_count": pop.loc[new_angles.index, "collision_count"] + 1,
+            "last_collision_time": pd.Series(self.clock(), index=new_angles.index),
+        })
 
         self.population_view.update(updates)
 
@@ -197,8 +220,7 @@ class Collisions(Component):
 
 
 class Flock(Component):
-    """Component for implementing flocking behavior where particles align their direction
-    with nearby neighbors using KDTree for efficient neighbor finding"""
+    """Component for implementing flocking behavior using shared spatial index"""
 
     @property
     def columns_required(self) -> List[str]:
@@ -206,7 +228,7 @@ class Flock(Component):
 
     def __init__(self):
         super().__init__()
-        self.current_flocks = []  # List to store current flock centers
+        self.current_flocks = []
 
     CONFIGURATION_DEFAULTS = {
         "particle": {"flock": {"radius": 0.05, "alignment_strength": 0.91}}
@@ -219,26 +241,26 @@ class Flock(Component):
         self.randomness = builder.randomness.get_stream("particle.flocking")
         self.clock = builder.time.clock()
         self.flock_updates = 0
+        
+        self.spatial_index = builder.components.get_component("particle_spatial_index")
 
     def on_time_step(self, event: Event) -> None:
         """Update particle directions based on neighboring particles"""
         pop = self.population_view.get(event.index)
-        if len(pop) < 2:  # Need at least 2 particles for flocking
+        if len(pop) < 2:
             return
 
-        # Build KDTree from current particle positions
-        positions = pop[["x", "y"]].values
-        tree = KDTree(positions, leaf_size=2)
-
-        # Find all neighbors within flock radius for each particle
-        neighbor_indices = tree.query_radius(positions, r=self.flock_radius)
+        # Get neighbor lists for each particle
+        neighbor_lists = self.spatial_index.query_radius(self.flock_radius)
+        if neighbor_lists is None:
+            return
 
         # Track particles that will be updated
         particles_to_update = []
         new_thetas = []
 
         # Calculate new directions based on neighbors
-        for i, neighbors in enumerate(neighbor_indices):
+        for i, neighbors in enumerate(neighbor_lists):
             if len(neighbors) > 1:  # Only update if particle has neighbors
                 # Calculate average direction of neighbors (excluding self)
                 neighbors = [n for n in neighbors if n != i]
@@ -247,21 +269,18 @@ class Flock(Component):
                 avg_theta = np.mean(neighbor_thetas)
                 # Interpolate between current direction and neighbor average
                 current_theta = pop.iloc[i]["theta"]
-                new_theta = (
-                    1 - self.alignment_strength
-                ) * current_theta + self.alignment_strength * avg_theta
+                new_theta = ((1 - self.alignment_strength) * current_theta + 
+                           self.alignment_strength * avg_theta)
 
                 particles_to_update.append(i)
                 new_thetas.append(new_theta)
 
-        updates = pd.DataFrame(
-            {
-                "theta": new_thetas,
-            },
-            index=pop.index[particles_to_update],
-        )
-
-        self.population_view.update(updates)
+        if particles_to_update:
+            updates = pd.DataFrame(
+                {"theta": new_thetas},
+                index=pop.index[particles_to_update],
+            )
+            self.population_view.update(updates)
 
     def on_simulation_end(self, event: Event) -> None:
         print(f"flock updates total: {self.flock_updates}")

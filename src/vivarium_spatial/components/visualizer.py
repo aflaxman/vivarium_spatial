@@ -30,7 +30,7 @@ class ParticleVisualizer(Component):
         max_collision_radius: int = 300,
         collision_fade_speed: float = 0.05,
         chart_size: tuple = (300, 150),  # Width and height of trend chart
-        fps: int = 12,
+        fps: int = 24,
     ):
         super().__init__()
         self.background_color = background_color
